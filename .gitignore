@@ -56,7 +56,7 @@ models-mnt
 /llama-bench
 /lookahead
 /lookup
-/main
+/main[^/]
 /metal
 /passkey
 /perplexity
