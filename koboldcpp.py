@@ -128,6 +128,7 @@ def parse_reqtimeout(value):
 # abuse prevention
 stop_token_max = 256
 ban_token_max = 768
+antislop_backtrack_max = 64
 logit_bias_max = 512
 dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
@@ -491,7 +492,9 @@ class generation_inputs(ctypes.Structure):
                 ("logit_biases", ctypes.POINTER(logit_bias)),
                 ("banned_tokens_len", ctypes.c_int),
                 ("banned_tokens", ctypes.POINTER(ctypes.c_char_p)),
-                ("reasoning_budget", ctypes.c_int)]
+                ("reasoning_budget", ctypes.c_int),
+                ("antislop_backtrack", ctypes.c_int),
+                ("antislop_threshold", ctypes.c_float)]
 
 class generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
@@ -2461,6 +2464,9 @@ def generate(genparams, stream_flag=False):
     render_special = genparams.get('render_special', False)
     banned_strings = coerce_ban_list(genparams.get('banned_strings', [])) # SillyTavern uses that name
     banned_tokens = coerce_ban_list(genparams.get('banned_tokens', banned_strings))
+    antislop_backtrack = tryparseint(genparams.get('antislop_backtrack', 0),0)
+    antislop_backtrack = 0 if antislop_backtrack < 0 else (antislop_backtrack_max if antislop_backtrack > antislop_backtrack_max else antislop_backtrack)
+    antislop_threshold = tryparsefloat(genparams.get('antislop_threshold', 0.8),0.8)
     bypass_eos_token = genparams.get('bypass_eos', False)
     tool_call_fix = genparams.get('_generic_tool_json_array_fix', False)
     custom_token_bans = genparams.get('custom_token_bans', '')
@@ -2642,6 +2648,8 @@ def generate(genparams, stream_flag=False):
         inputs.banned_tokens[n] = tok.encode("UTF-8")
 
     inputs.reasoning_budget = reasoning_budget
+    inputs.antislop_backtrack = antislop_backtrack
+    inputs.antislop_threshold = antislop_threshold
 
     currentusergenkey = genkey
     totalgens += 1

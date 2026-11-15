@@ -4726,6 +4726,7 @@ Current version indicated by LITEVER below.
 		extrastopseq: "",
 		includedefaultstops: true,
 		tokenbans: "",
+		antislop_backtrack: 0,
 		logitbiasdict: {},
 		regexreplace_data: [],
 		placeholder_tags_data: [],
@@ -18369,6 +18370,7 @@ Current version indicated by LITEVER below.
 		//stop seq and tokens
 		document.getElementById("extrastopseq").value = localsettings.extrastopseq;
 		document.getElementById("tokenbans").value = localsettings.tokenbans;
+		document.getElementById("antislop_backtrack").value = localsettings.antislop_backtrack;
 		document.getElementById("logitbiastxtarea").value = JSON.stringify(localsettings.logitbiasdict,null,2);
 		if(custom_kobold_endpoint!="" || !is_using_custom_ep() )
 		{
@@ -19176,6 +19178,7 @@ Current version indicated by LITEVER below.
 
 		localsettings.extrastopseq = document.getElementById("extrastopseq").value;
 		localsettings.tokenbans = document.getElementById("tokenbans").value;
+		localsettings.antislop_backtrack = cleannum(parseInt(document.getElementById("antislop_backtrack").value), 0, 64);
 		try
 		{
 			let lb = document.getElementById("logitbiastxtarea").value;
@@ -23535,6 +23538,7 @@ Current version indicated by LITEVER below.
 			submit_payload.params.smoothing_curve = localsettings.smoothing_curve;
 			submit_payload.params.nsigma = localsettings.nsigma;
 			submit_payload.params.banned_tokens = get_token_bans();
+			submit_payload.params.antislop_backtrack = localsettings.antislop_backtrack;
 			submit_payload.params.render_special = localsettings.render_special_tags;
 			submit_payload.params.logprobs = localsettings.request_logprobs;
 			if(localsettings.reasoning_effort)
@@ -34467,6 +34471,11 @@ Current version indicated by LITEVER below.
 						<div style="display: flex; column-gap: 4px; margin-bottom: 4px;">
 						<input class="menuinput_inline" type="text" placeholder="None" value="" id="tokenbans">
 						<button type="button" class="btn btn-primary" style="width:90px;padding:2px;height:24px" onclick="add_token_ban()">Add New</button>
+						</div>
+						<div class="settinglabel">
+						<div class="justifyleft">Backtrack Tokens <span class="helpicon">?<span
+							class="helptext">When a banned phrase appears, rewind up to this many extra tokens before it, to where the AI actually decided on that phrase, instead of only to the start of the phrase. Text will be streamed with a slightly longer delay. Set to 0 to disable.</span></span></div>
+						<input class="push-right" title="Anti-Slop Backtrack Tokens" type="text" inputmode="decimal" value="0" style="width:10ch" id="antislop_backtrack">
 						</div>
 					</div>
 

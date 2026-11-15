@@ -155,6 +155,8 @@ struct generation_inputs
     const int banned_tokens_len = 0;
     const char ** banned_tokens = nullptr;
     const int reasoning_budget = -1;
+    const int antislop_backtrack = 0;
+    const float antislop_threshold = 0.8f;
 };
 struct generation_outputs
 {

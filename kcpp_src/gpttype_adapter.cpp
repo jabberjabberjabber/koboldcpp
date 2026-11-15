@@ -211,6 +211,9 @@ static std::string overridden_jinja_template = ""; //if set, overrides jinja tem
 
 static int delayed_generated_tokens_limit = 0;
 std::deque<std::string> delayed_generated_tokens; //for use with antislop sampling
+static std::deque<float> delayed_generated_probs; //raw probability of each delayed token, same size as delayed_generated_tokens
+static int antislop_backtrack = 0; //max extra tokens antislop may rewind before a banned phrase, 0 means rewind to phrase start only
+static float antislop_threshold = 0.8f; //a token picked below this raw probability is considered a real choice by the model, above it the model was following a plan
 static std::map<int,std::vector<int>> antislop_banned_token_ids; //first is the npast position, second is the array of banned ids at that index
 
 static int savestate_limit = 0;
@@ -821,6 +824,38 @@ static std::string toLowerCase(const std::string& str) {
     return result;
 }
 
+
+//returns the probability of a token from raw logits, before any samplers are applied
+static float GetRawTokenProb(const float * logits, int n_vocab, int id)
+{
+    float maxlogit = logits[0];
+    for (int i = 1; i < n_vocab; ++i)
+    {
+        maxlogit = (logits[i] > maxlogit ? logits[i] : maxlogit);
+    }
+    double sum = 0;
+    for (int i = 0; i < n_vocab; ++i)
+    {
+        sum += exp(logits[i] - maxlogit);
+    }
+    return (float)(exp(logits[id] - maxlogit) / sum);
+}
+
+//returns true if this token ends a sentence or a line
+static bool IsSentenceBreak(const std::string & tok)
+{
+    if (tok.find('\n') != std::string::npos)
+    {
+        return true;
+    }
+    size_t last = tok.find_last_not_of(" \"'*)");
+    if (last == std::string::npos)
+    {
+        return false;
+    }
+    char c = tok[last];
+    return (c == '.' || c == '!' || c == '?' || c == ';' || c == ':');
+}
 
 bool ContextRewind(std::vector<int> &embd, std::vector<int> &current_context_tokens, int &n_past, std::vector<int> &last_n_tokens, const int amount_rewind)
 {
@@ -7470,6 +7505,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         generated_tokens.reserve(16);
     }
     delayed_generated_tokens.clear();
+    delayed_generated_probs.clear();
 
     concat_output_mtx.lock();
     concat_output = "";
@@ -7519,6 +7555,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     banned_phrases.clear();
     delayed_generated_tokens_limit = 0;
     antislop_banned_token_ids.clear();
+    antislop_backtrack = (inputs.antislop_backtrack > 0 ? inputs.antislop_backtrack : 0);
+    antislop_threshold = inputs.antislop_threshold;
     banned_tokens.clear();
     for(int x=0;x<inputs.banned_tokens_len;++x)
     {
@@ -7585,6 +7623,10 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         }
     }
 
+    if(banned_phrases.size()>0)
+    {
+        delayed_generated_tokens_limit += antislop_backtrack; //hold back more tokens so we can rewind further
+    }
     if(debugmode==1 && !is_quiet && banned_phrases.size()>0)
     {
         printf("\nBanned a total of %zu phrases, with max token count of %d.\n",banned_phrases.size(),delayed_generated_tokens_limit);
@@ -8781,6 +8823,13 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 sampler_order, grammar, dynatemp_range, dynatemp_exponent, smoothing_factor, smoothing_curve, adaptive_target, adaptive_decay,
                 thinking_start_sequence, thinking_end_sequence, thinking_end_phrase_toksleft, kcpp_data->reasoning_budget);
 
+                //antislop backtracking needs to know how confident the model was in this token
+                float rawprob = 1.0f;
+                if(antislop_backtrack > 0 && banned_phrases.size() > 0)
+                {
+                    rawprob = GetRawTokenProb(logitsPtr, n_vocab, id);
+                }
+
                 if(draft_used)
                 {
                     if(logits_sampled < draft_results.drafted_amount)
@@ -8832,6 +8881,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                     }
 
                     delayed_generated_tokens.push_back(tokenizedstr);
+                    delayed_generated_probs.push_back(rawprob);
                     while(delayed_generated_tokens.size() > delayed_generated_tokens_limit && delayed_generated_tokens.size() > 0)
                     {
                         concat_output_mtx.lock();
@@ -8839,6 +8889,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                         concat_output += delayed_generated_tokens[0];
                         concat_output_mtx.unlock();
                         delayed_generated_tokens.pop_front();
+                        delayed_generated_probs.pop_front();
                     }
                 }
 
@@ -8896,6 +8947,23 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                     break;
                                 }
                             }
+                            //the model usually commits to a phrase before its first token, so try to rewind to where that happened
+                            if (antislop_backtrack > 0 && rewind_amt > 0 && delayed_generated_probs.size() == delayed_generated_tokens.size())
+                            {
+                                int phrase_start = delayed_generated_tokens.size() - rewind_amt;
+                                int earliest = (phrase_start > antislop_backtrack ? phrase_start - antislop_backtrack : 0);
+                                for (int i = phrase_start; i > earliest; --i)
+                                {
+                                    //walk back over the run of confident tokens leading into the phrase, stopping after the last real choice or sentence break
+                                    if (delayed_generated_probs[i - 1] < antislop_threshold || IsSentenceBreak(delayed_generated_tokens[i - 1]))
+                                    {
+                                        rewind_amt = delayed_generated_tokens.size() - i;
+                                        break;
+                                    }
+                                }
+                                //if nothing was found, rewind_amt is unchanged and we rewind to the phrase start
+                            }
+
                             if (rewind_amt > 0 && (current_context_tokens.size() - rewind_amt) > 0)
                             {
                                 int last_tok = current_context_tokens[current_context_tokens.size() - rewind_amt];
@@ -8908,9 +8976,14 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 if(rwok)
                                 {
                                     delayed_generated_tokens.resize(delayed_generated_tokens.size() - rewind_amt);
+                                    delayed_generated_probs.resize(delayed_generated_tokens.size());
 
                                     // Check if the key exists
                                     int banindex = n_past+1;
+                                    if (antislop_backtrack > 0) //bans after this point were for text that no longer exists
+                                    {
+                                        antislop_banned_token_ids.erase(antislop_banned_token_ids.upper_bound(banindex), antislop_banned_token_ids.end());
+                                    }
                                     if (antislop_banned_token_ids.find(banindex) == antislop_banned_token_ids.end()) {
                                         antislop_banned_token_ids[banindex] = std::vector<int>();
                                     }
@@ -9215,6 +9288,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         concat_output_mtx.unlock();
         delayed_generated_tokens.pop_front();
     }
+    delayed_generated_probs.clear();
 
     //if running rnn model in smartcache mode, save progress after each gen
     // if(kcpp_data->smartcache && is_recurrent && file_format==FileFormat::GGUF_GENERIC && current_context_tokens.size() > 32)

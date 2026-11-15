@@ -208,6 +208,16 @@
                             },
                             "type": "array"
                          },
+                         "antislop_backtrack": {
+                            "default": 0,
+                            "description": "KoboldCpp ONLY. When a banned phrase from banned_tokens is generated, allows rewinding up to this many extra tokens before the phrase, to where the model committed to it (the start of the run of high probability tokens leading into the phrase, or else the start of the sentence). If 0, rewinds to the start of the phrase only.",
+                            "type": "integer"
+                         },
+                         "antislop_threshold": {
+                            "default": 0.8,
+                            "description": "KoboldCpp ONLY. Used with antislop_backtrack. A generated token with a raw probability at or above this value is treated as part of the run leading into a banned phrase, and can be rewound past. Lower values rewind further, 0 always rewinds to the start of the sentence, and values above 1 never rewind past the start of the phrase.",
+                            "type": "number"
+                         },
                          "logit_bias": {
                             "default": {},
                             "description": "KoboldCpp ONLY. An dictionary of key-value pairs, which indicate the token IDs (int) and logit bias (float) to apply for that token.",
